@@ -37,11 +37,9 @@ export type SlackStreamChunk =
     }
   | {
       type: "task_update";
-      task: {
-        task_id: string;
-        title: string;
-        status: "pending" | "in_progress" | "complete" | "completed" | "error";
-      };
+      id: string;
+      title: string;
+      status: "pending" | "in_progress" | "complete" | "completed" | "error";
     };
 
 export type SlackChunkStreamSession = {
@@ -201,13 +199,13 @@ export async function stopSlackStream(params: StopSlackStreamParams): Promise<vo
 function resolveSlackStreamMessageTs(
   response: WebAPICallResult & { ts?: string; message_ts?: string },
 ): string {
-  const messageTs = response.message_ts;
-  if (typeof messageTs === "string" && messageTs.length > 0) {
-    return messageTs;
-  }
   const ts = response.ts;
   if (typeof ts === "string" && ts.length > 0) {
     return ts;
+  }
+  const messageTs = response.message_ts;
+  if (typeof messageTs === "string" && messageTs.length > 0) {
+    return messageTs;
   }
   throw new TypeError("Slack stream response missing message timestamp");
 }
@@ -251,7 +249,7 @@ export async function appendSlackChunkStream(params: AppendSlackChunkStreamParam
   await apiClient.apiCall("chat.appendStream", {
     channel: session.channel,
     thread_ts: session.threadTs,
-    message_ts: session.messageTs,
+    ts: session.messageTs,
     chunks,
   });
 }
@@ -267,7 +265,7 @@ export async function stopSlackChunkStream(params: StopSlackChunkStreamParams): 
   await apiClient.apiCall("chat.stopStream", {
     channel: session.channel,
     thread_ts: session.threadTs,
-    message_ts: session.messageTs,
+    ts: session.messageTs,
     ...(chunks?.length ? { chunks } : {}),
   });
 }

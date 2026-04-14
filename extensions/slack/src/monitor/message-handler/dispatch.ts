@@ -240,11 +240,9 @@ function createSlackTaskUpdateChunk(params: {
 }): SlackStreamChunk {
   return {
     type: "task_update",
-    task: {
-      task_id: params.taskId,
-      title: params.title,
-      status: params.status,
-    },
+    id: params.taskId,
+    title: params.title,
+    status: params.status,
   };
 }
 

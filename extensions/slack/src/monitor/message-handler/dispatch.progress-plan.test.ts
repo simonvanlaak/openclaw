@@ -296,11 +296,9 @@ describe("dispatchPreparedSlackMessage progress plan streaming", () => {
         chunks: expect.arrayContaining([
           expect.objectContaining({
             type: "task_update",
-            task: expect.objectContaining({
-              task_id: "understand_request",
-              title: "Understand request",
-              status: "in_progress",
-            }),
+            id: "understand_request",
+            title: "Understand request",
+            status: "in_progress",
           }),
         ]),
       }),
@@ -309,7 +307,7 @@ describe("dispatchPreparedSlackMessage progress plan streaming", () => {
     const appendedTasks = appendSlackChunkStreamMock.mock.calls.flatMap((call: unknown[]) => {
       const first = call[0] as
         | {
-            chunks?: Array<{ task?: { title?: string; status?: string } }>;
+            chunks?: Array<{ id?: string; title?: string; status?: string }>;
           }
         | undefined;
       return first?.chunks ?? [];
@@ -318,22 +316,28 @@ describe("dispatchPreparedSlackMessage progress plan streaming", () => {
     expect(appendedTasks).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          task: expect.objectContaining({ title: "Understand request", status: "complete" }),
+          title: "Understand request",
+          status: "complete",
         }),
         expect.objectContaining({
-          task: expect.objectContaining({ title: "Run tools", status: "in_progress" }),
+          title: "Run tools",
+          status: "in_progress",
         }),
         expect.objectContaining({
-          task: expect.objectContaining({ title: "Running command", status: "in_progress" }),
+          title: "Running command",
+          status: "in_progress",
         }),
         expect.objectContaining({
-          task: expect.objectContaining({ title: "Running command", status: "complete" }),
+          title: "Running command",
+          status: "complete",
         }),
         expect.objectContaining({
-          task: expect.objectContaining({ title: "Compose response", status: "in_progress" }),
+          title: "Compose response",
+          status: "in_progress",
         }),
         expect.objectContaining({
-          task: expect.objectContaining({ title: "Compose response", status: "complete" }),
+          title: "Compose response",
+          status: "complete",
         }),
       ]),
     );
