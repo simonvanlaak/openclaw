@@ -33,8 +33,19 @@ import {
   buildStatusFinalPreviewText,
   resolveSlackStreamingConfig,
 } from "../../stream-mode.js";
-import type { SlackStreamSession } from "../../streaming.js";
-import { appendSlackStream, startSlackStream, stopSlackStream } from "../../streaming.js";
+import type {
+  SlackChunkStreamSession,
+  SlackStreamChunk,
+  SlackStreamSession,
+} from "../../streaming.js";
+import {
+  appendSlackChunkStream,
+  appendSlackStream,
+  startSlackChunkStream,
+  startSlackStream,
+  stopSlackChunkStream,
+  stopSlackStream,
+} from "../../streaming.js";
 import { resolveSlackThreadTargets } from "../../threading.js";
 import { normalizeSlackAllowOwnerEntry } from "../allow-list.js";
 import { resolveStorePath, updateLastRoute } from "../config.runtime.js";
@@ -213,6 +224,30 @@ function shouldUseStreaming(params: {
   return true;
 }
 
+function shouldUseSlackProgressPlanStream(params: {
+  mode: "off" | "partial" | "block" | "progress";
+  threadTs?: string;
+}): boolean {
+  return (
+    params.mode === "progress" && typeof params.threadTs === "string" && params.threadTs.length > 0
+  );
+}
+
+function createSlackTaskUpdateChunk(params: {
+  taskId: string;
+  title: string;
+  status: "pending" | "in_progress" | "complete" | "error";
+}): SlackStreamChunk {
+  return {
+    type: "task_update",
+    task: {
+      task_id: params.taskId,
+      title: params.title,
+      status: params.status,
+    },
+  };
+}
+
 export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessage) {
   const { ctx, account, message, route } = prepared;
   const cfg = ctx.cfg;
@@ -347,7 +382,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
         : payload,
     typing: {
       start: async () => {
-        if (!didSetStatus) {
+        if (!didSetStatus && !progressPlanStreamingEnabled) {
           didSetStatus = true;
           await ctx.setSlackThreadStatus({
             channelId: message.channel,
@@ -419,6 +454,10 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
     mode: slackStreaming.mode,
     nativeStreaming: slackStreaming.nativeStreaming,
   });
+  const progressPlanStreamingEnabled = shouldUseSlackProgressPlanStream({
+    mode: slackStreaming.mode,
+    threadTs: streamThreadHint,
+  });
   const useStreaming = shouldUseStreaming({
     streamingEnabled,
     threadTs: streamThreadHint,
@@ -428,10 +467,126 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
     useStreaming,
   });
   let streamSession: SlackStreamSession | null = null;
+  let progressStreamSession: SlackChunkStreamSession | null = null;
   let streamFailed = false;
   let usedReplyThreadTs: string | undefined;
   let observedReplyDelivery = false;
   const deliveryTracker = createSlackTurnDeliveryTracker();
+  let progressUpdateChain: Promise<void> = Promise.resolve();
+  let progressPlanStarted = false;
+  let progressUnderstandCompleted = false;
+  let progressToolsActivated = false;
+  let progressComposeStarted = false;
+  let progressComposeCompleted = false;
+  const activeProgressToolTasks: string[] = [];
+  const progressToolTaskIdsByItemId = new Map<string, string>();
+  const progressToolTaskTitles = new Map<string, string>();
+
+  const queueProgressUpdate = (callback: () => Promise<void>) => {
+    progressUpdateChain = progressUpdateChain.then(callback).catch((err) => {
+      runtime.error?.(danger(`slack progress stream failed: ${String(err)}`));
+    });
+    return progressUpdateChain;
+  };
+
+  const ensureProgressPlanStream = async () => {
+    if (!progressPlanStreamingEnabled || progressPlanStarted) {
+      return;
+    }
+    if (!streamThreadHint) {
+      return;
+    }
+    progressStreamSession = await startSlackChunkStream({
+      client: ctx.app.client,
+      channel: message.channel,
+      threadTs: streamThreadHint,
+      teamId: ctx.teamId,
+      userId: message.user,
+      taskDisplayMode: "plan",
+      chunks: [
+        createSlackTaskUpdateChunk({
+          taskId: "understand_request",
+          title: "Understand request",
+          status: "in_progress",
+        }),
+        createSlackTaskUpdateChunk({
+          taskId: "run_tools",
+          title: "Run tools",
+          status: "pending",
+        }),
+        createSlackTaskUpdateChunk({
+          taskId: "compose_response",
+          title: "Compose response",
+          status: "pending",
+        }),
+      ],
+    });
+    progressPlanStarted = true;
+    didSetStatus = false;
+    await ctx.setSlackThreadStatus({
+      channelId: message.channel,
+      threadTs: streamThreadHint,
+      status: "",
+    });
+  };
+
+  const appendProgressTaskUpdates = async (chunks: SlackStreamChunk[]) => {
+    if (!progressPlanStreamingEnabled) {
+      return;
+    }
+    await ensureProgressPlanStream();
+    if (!progressStreamSession || chunks.length === 0) {
+      return;
+    }
+    await appendSlackChunkStream({
+      session: progressStreamSession,
+      chunks,
+    });
+  };
+
+  const completeProgressUnderstand = async () => {
+    if (progressUnderstandCompleted) {
+      return;
+    }
+    progressUnderstandCompleted = true;
+    await appendProgressTaskUpdates([
+      createSlackTaskUpdateChunk({
+        taskId: "understand_request",
+        title: "Understand request",
+        status: "complete",
+      }),
+    ]);
+  };
+
+  const setProgressToolsStatus = async (
+    status: "pending" | "in_progress" | "complete" | "error",
+  ) => {
+    await appendProgressTaskUpdates([
+      createSlackTaskUpdateChunk({
+        taskId: "run_tools",
+        title: "Run tools",
+        status,
+      }),
+    ]);
+  };
+
+  const setProgressComposeStatus = async (
+    status: "pending" | "in_progress" | "complete" | "error",
+  ) => {
+    if (status === "in_progress") {
+      progressComposeStarted = true;
+    }
+    if (status === "complete") {
+      progressComposeCompleted = true;
+    }
+    await appendProgressTaskUpdates([
+      createSlackTaskUpdateChunk({
+        taskId: "compose_response",
+        title: "Compose response",
+        status,
+      }),
+    ]);
+  };
 
   const deliverNormally = async (params: {
     payload: ReplyPayload;
@@ -719,6 +874,12 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
         }
       };
 
+  if (progressPlanStreamingEnabled) {
+    await queueProgressUpdate(async () => {
+      await ensureProgressPlanStream();
+    });
+  }
+
   let dispatchError: unknown;
   let queuedFinal = false;
   let counts: { final?: number; block?: number } = {};
@@ -744,7 +905,29 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
             : async (payload) => {
                 updateDraftFromPartial(payload.text);
               },
-        onAssistantMessageStart: onDraftBoundary,
+        onAssistantMessageStart: async () => {
+          await onDraftBoundary?.();
+          if (!progressPlanStreamingEnabled) {
+            return;
+          }
+          await queueProgressUpdate(async () => {
+            await completeProgressUnderstand();
+            if (!progressComposeStarted) {
+              for (const taskId of activeProgressToolTasks.splice(0)) {
+                await appendProgressTaskUpdates([
+                  createSlackTaskUpdateChunk({
+                    taskId,
+                    title: progressToolTaskTitles.get(taskId) ?? "Use tool",
+                    status: "complete",
+                  }),
+                ]);
+                progressToolTaskTitles.delete(taskId);
+              }
+              await setProgressToolsStatus("complete");
+              await setProgressComposeStatus("in_progress");
+            }
+          });
+        },
         onReasoningEnd: onDraftBoundary,
         onReasoningStream: statusReactionsEnabled
           ? async () => {
@@ -755,6 +938,9 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
           if (statusReactionsEnabled) {
             await statusReactions.setTool(payload.name);
           }
+          if (progressPlanStreamingEnabled) {
+            return;
+          }
           if (!payload.name || !statusThreadTs) {
             return;
           }
@@ -763,6 +949,72 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
             channelId: message.channel,
             threadTs: statusThreadTs,
             status: toolStatusLabel(payload.name),
+          });
+        },
+        onItemEvent: async (payload) => {
+          if (!progressPlanStreamingEnabled) {
+            return;
+          }
+          await queueProgressUpdate(async () => {
+            if (payload.kind !== "tool" || !payload.itemId || !payload.title) {
+              return;
+            }
+            await completeProgressUnderstand();
+            if (!progressToolsActivated) {
+              progressToolsActivated = true;
+              await setProgressToolsStatus("in_progress");
+            }
+
+            let taskId = progressToolTaskIdsByItemId.get(payload.itemId);
+            if (!taskId) {
+              taskId =
+                payload.itemId
+                  .replace(/[^a-z0-9]+/gi, "_")
+                  .replace(/^_+|_+$/g, "")
+                  .toLowerCase() || "tool";
+              progressToolTaskIdsByItemId.set(payload.itemId, taskId);
+              progressToolTaskTitles.set(taskId, payload.title);
+              activeProgressToolTasks.push(taskId);
+            }
+
+            if (
+              payload.phase === "start" ||
+              payload.phase === "update" ||
+              payload.status === "running"
+            ) {
+              await appendProgressTaskUpdates([
+                createSlackTaskUpdateChunk({
+                  taskId,
+                  title: payload.title,
+                  status: "in_progress",
+                }),
+              ]);
+              return;
+            }
+
+            if (
+              payload.phase === "end" ||
+              payload.status === "completed" ||
+              payload.status === "failed"
+            ) {
+              const isError = payload.status === "failed";
+              await appendProgressTaskUpdates([
+                createSlackTaskUpdateChunk({
+                  taskId,
+                  title: progressToolTaskTitles.get(taskId) ?? payload.title,
+                  status: isError ? "error" : "complete",
+                }),
+              ]);
+              progressToolTaskIdsByItemId.delete(payload.itemId);
+              progressToolTaskTitles.delete(taskId);
+              const index = activeProgressToolTasks.indexOf(taskId);
+              if (index >= 0) {
+                activeProgressToolTasks.splice(index, 1);
+              }
+              if (activeProgressToolTasks.length === 0 && !progressComposeStarted) {
+                await setProgressToolsStatus(isError ? "error" : "complete");
+              }
+            }
           });
         },
       },
@@ -786,6 +1038,51 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       await stopSlackStream({ session: finalStream });
     } catch (err) {
       runtime.error?.(danger(`slack-stream: failed to stop stream: ${String(err)}`));
+    }
+  }
+
+  await progressUpdateChain;
+  const finalProgressStream = progressStreamSession as SlackChunkStreamSession | null;
+  if (finalProgressStream && !finalProgressStream.stopped) {
+    try {
+      if (dispatchError) {
+        await appendProgressTaskUpdates([
+          createSlackTaskUpdateChunk({
+            taskId: progressComposeStarted ? "compose_response" : "understand_request",
+            title: progressComposeStarted ? "Compose response" : "Understand request",
+            status: "error",
+          }),
+        ]);
+        if (progressToolsActivated && activeProgressToolTasks.length > 0) {
+          for (const taskId of activeProgressToolTasks.splice(0)) {
+            await appendProgressTaskUpdates([
+              createSlackTaskUpdateChunk({
+                taskId,
+                title: progressToolTaskTitles.get(taskId) ?? "Use tool",
+                status: "error",
+              }),
+            ]);
+            progressToolTaskTitles.delete(taskId);
+          }
+          await setProgressToolsStatus("error");
+        }
+      } else {
+        if (!progressUnderstandCompleted) {
+          await completeProgressUnderstand();
+        }
+        if (!progressToolsActivated) {
+          await setProgressToolsStatus("complete");
+        }
+        if (!progressComposeStarted) {
+          await setProgressComposeStatus("in_progress");
+        }
+        if (!progressComposeCompleted) {
+          await setProgressComposeStatus("complete");
+        }
+      }
+      await stopSlackChunkStream({ session: finalProgressStream });
+    } catch (err) {
+      runtime.error?.(danger(`slack progress stream failed to stop: ${String(err)}`));
     }
   }
 

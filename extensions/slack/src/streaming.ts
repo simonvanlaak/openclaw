@@ -11,7 +11,7 @@
  * @see https://docs.slack.dev/reference/methods/chat.stopStream
  */
 
-import type { WebClient } from "@slack/web-api";
+import type { WebAPICallResult, WebClient } from "@slack/web-api";
 import type { ChatStreamer } from "@slack/web-api/dist/chat-stream.js";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 
@@ -27,6 +27,28 @@ export type SlackStreamSession = {
   /** Thread timestamp (required for streaming). */
   threadTs: string;
   /** True once stop() has been called. */
+  stopped: boolean;
+};
+
+export type SlackStreamChunk =
+  | {
+      type: "markdown_text";
+      markdown_text: string;
+    }
+  | {
+      type: "task_update";
+      task: {
+        task_id: string;
+        title: string;
+        status: "pending" | "in_progress" | "complete" | "completed" | "error";
+      };
+    };
+
+export type SlackChunkStreamSession = {
+  client: WebClient;
+  channel: string;
+  threadTs: string;
+  messageTs: string;
   stopped: boolean;
 };
 
@@ -59,6 +81,30 @@ export type StopSlackStreamParams = {
   session: SlackStreamSession;
   /** Optional final markdown text to append before stopping. */
   text?: string;
+};
+
+export type StartSlackChunkStreamParams = {
+  client: WebClient;
+  channel: string;
+  threadTs: string;
+  teamId?: string;
+  userId?: string;
+  taskDisplayMode?: "plan" | "task_update";
+  chunks?: SlackStreamChunk[];
+};
+
+export type AppendSlackChunkStreamParams = {
+  session: SlackChunkStreamSession;
+  chunks: SlackStreamChunk[];
+};
+
+export type StopSlackChunkStreamParams = {
+  session: SlackChunkStreamSession;
+  chunks?: SlackStreamChunk[];
+};
+
+type SlackApiClient = WebClient & {
+  apiCall: (method: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>;
 };
 
 // ---------------------------------------------------------------------------
@@ -150,4 +196,78 @@ export async function stopSlackStream(params: StopSlackStreamParams): Promise<vo
   await session.streamer.stop(text ? { markdown_text: text } : undefined);
 
   logVerbose("slack-stream: stream stopped");
+}
+
+function resolveSlackStreamMessageTs(
+  response: WebAPICallResult & { ts?: string; message_ts?: string },
+): string {
+  const messageTs = response.message_ts;
+  if (typeof messageTs === "string" && messageTs.length > 0) {
+    return messageTs;
+  }
+  const ts = response.ts;
+  if (typeof ts === "string" && ts.length > 0) {
+    return ts;
+  }
+  throw new TypeError("Slack stream response missing message timestamp");
+}
+
+export async function startSlackChunkStream(
+  params: StartSlackChunkStreamParams,
+): Promise<SlackChunkStreamSession> {
+  const { client, channel, threadTs, teamId, userId, taskDisplayMode, chunks } = params;
+
+  logVerbose(
+    `slack-stream: starting chunk stream in ${channel} thread=${threadTs}${
+      taskDisplayMode ? ` mode=${taskDisplayMode}` : ""
+    }`,
+  );
+
+  const apiClient = client as SlackApiClient;
+  const response = await apiClient.apiCall("chat.startStream", {
+    channel,
+    thread_ts: threadTs,
+    ...(teamId ? { recipient_team_id: teamId } : {}),
+    ...(userId ? { recipient_user_id: userId } : {}),
+    ...(taskDisplayMode ? { task_display_mode: taskDisplayMode } : {}),
+    ...(chunks?.length ? { chunks } : {}),
+  });
+
+  return {
+    client,
+    channel,
+    threadTs,
+    messageTs: resolveSlackStreamMessageTs(response),
+    stopped: false,
+  };
+}
+
+export async function appendSlackChunkStream(params: AppendSlackChunkStreamParams): Promise<void> {
+  const { session, chunks } = params;
+  if (session.stopped || chunks.length === 0) {
+    return;
+  }
+  const apiClient = session.client as SlackApiClient;
+  await apiClient.apiCall("chat.appendStream", {
+    channel: session.channel,
+    thread_ts: session.threadTs,
+    message_ts: session.messageTs,
+    chunks,
+  });
+}
+
+export async function stopSlackChunkStream(params: StopSlackChunkStreamParams): Promise<void> {
+  const { session, chunks } = params;
+  if (session.stopped) {
+    logVerbose("slack-stream: chunk stream already stopped, ignoring duplicate stop");
+    return;
+  }
+  session.stopped = true;
+  const apiClient = session.client as SlackApiClient;
+  await apiClient.apiCall("chat.stopStream", {
+    channel: session.channel,
+    thread_ts: session.threadTs,
+    message_ts: session.messageTs,
+    ...(chunks?.length ? { chunks } : {}),
+  });
 }
