@@ -5,6 +5,7 @@ import {
   resolveSlackStreamingThreadHint,
   shouldEnableSlackPreviewStreaming,
   shouldInitializeSlackDraftStream,
+  toolStatusLabel,
 } from "./dispatch.js";
 
 describe("slack native streaming defaults", () => {
@@ -57,6 +58,18 @@ describe("slack turn delivery tracker", () => {
 
     expect(tracker.hasDelivered({ kind: "tool", payload, threadTs: "123.456" })).toBe(true);
     expect(tracker.hasDelivered({ kind: "final", payload, threadTs: "123.456" })).toBe(false);
+  });
+});
+
+describe("slack tool status labels", () => {
+  it("maps built-in tool names to readable Slack assistant status text", () => {
+    expect(toolStatusLabel("web_search")).toBe("Searching the web...");
+    expect(toolStatusLabel("Read")).toBe("Reading files...");
+    expect(toolStatusLabel("exec")).toBe("Running command...");
+  });
+
+  it("falls back to a generic label for unknown tools", () => {
+    expect(toolStatusLabel("custom_tool")).toBe("Using custom_tool...");
   });
 });
 
