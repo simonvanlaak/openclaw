@@ -123,6 +123,42 @@ export function toolStatusLabel(toolName: string): string {
   return TOOL_STATUS_LABELS[toolName] ?? `Using ${toolName}...`;
 }
 
+function normalizeSlackProgressToolTitle(params: { title?: string; itemId?: string }): string {
+  const haystack = `${params.title ?? ""} ${params.itemId ?? ""}`.toLowerCase();
+  if (haystack.includes("lin") || haystack.includes("linear")) {
+    return "Using Linear";
+  }
+  if (haystack.includes("gog") || haystack.includes("google")) {
+    return "Using Google Workspace";
+  }
+  if (haystack.includes("openviking") || haystack.includes(" viking") || haystack.includes("ov ")) {
+    return "Using OpenViking";
+  }
+  if (haystack.includes("slack")) {
+    return "Using Slack";
+  }
+  if (haystack.includes("memory")) {
+    return "Using memory";
+  }
+  if (haystack.includes("browser")) {
+    return "Using browser";
+  }
+  if (haystack.includes("read") && haystack.includes("file")) {
+    return "Reading files";
+  }
+  if (haystack.includes("exec") || haystack.includes("command") || haystack.includes("shell")) {
+    return "Running command";
+  }
+  const raw = params.title?.trim();
+  if (!raw) {
+    return "Using tool";
+  }
+  if (raw.length > 48 || raw.includes("`") || raw.includes("(") || raw.includes("/")) {
+    return "Using tool";
+  }
+  return raw;
+}
+
 export function isSlackStreamingEnabled(params: {
   mode: "off" | "partial" | "block" | "progress";
   nativeStreaming: boolean;
@@ -507,16 +543,6 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
           title: "Understand request",
           status: "in_progress",
         }),
-        createSlackTaskUpdateChunk({
-          taskId: "run_tools",
-          title: "Run tools",
-          status: "pending",
-        }),
-        createSlackTaskUpdateChunk({
-          taskId: "compose_response",
-          title: "Compose response",
-          status: "pending",
-        }),
       ],
     });
     progressPlanStarted = true;
@@ -557,16 +583,8 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
   };
 
   const setProgressToolsStatus = async (
-    status: "pending" | "in_progress" | "complete" | "error",
-  ) => {
-    await appendProgressTaskUpdates([
-      createSlackTaskUpdateChunk({
-        taskId: "run_tools",
-        title: "Run tools",
-        status,
-      }),
-    ]);
-  };
+    _status: "pending" | "in_progress" | "complete" | "error",
+  ) => {};
 
   const setProgressComposeStatus = async (
     status: "pending" | "in_progress" | "complete" | "error",
@@ -774,7 +792,12 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
             `slack: preview final edit failed; falling back to standard send (${String(err)})`,
           );
         }
-      } else if (previewStreamingEnabled && streamMode === "status_final" && hasStreamedMessage) {
+      } else if (
+        !progressPlanStreamingEnabled &&
+        previewStreamingEnabled &&
+        streamMode === "status_final" &&
+        hasStreamedMessage
+      ) {
         try {
           const statusChannelId = draftStream?.channelId();
           const statusMessageId = draftStream?.messageId();
@@ -971,9 +994,22 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
                   .replace(/^_+|_+$/g, "")
                   .toLowerCase() || "tool";
               progressToolTaskIdsByItemId.set(payload.itemId, taskId);
-              progressToolTaskTitles.set(taskId, payload.title);
+              progressToolTaskTitles.set(
+                taskId,
+                normalizeSlackProgressToolTitle({
+                  title: payload.title,
+                  itemId: payload.itemId,
+                }),
+              );
               activeProgressToolTasks.push(taskId);
             }
+
+            const taskTitle =
+              progressToolTaskTitles.get(taskId) ??
+              normalizeSlackProgressToolTitle({
+                title: payload.title,
+                itemId: payload.itemId,
+              });
 
             if (
               payload.phase === "start" ||
@@ -983,7 +1019,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
               await appendProgressTaskUpdates([
                 createSlackTaskUpdateChunk({
                   taskId,
-                  title: payload.title,
+                  title: taskTitle,
                   status: "in_progress",
                 }),
               ]);
@@ -999,7 +1035,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
               await appendProgressTaskUpdates([
                 createSlackTaskUpdateChunk({
                   taskId,
-                  title: progressToolTaskTitles.get(taskId) ?? payload.title,
+                  title: taskTitle,
                   status: isError ? "error" : "complete",
                 }),
               ]);

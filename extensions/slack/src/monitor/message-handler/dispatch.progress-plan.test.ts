@@ -244,14 +244,16 @@ vi.mock("../reply.runtime.js", () => ({
     await params.replyOptions?.onItemEvent?.({
       itemId: "tool:exec-1",
       kind: "tool",
-      title: "Running command",
+      title:
+        "exec lin issue query --all-teams --state completed --json --limit 100 --updated-after 2026-04-13 (in ~/.openclaw/workspace)",
       phase: "start",
       status: "running",
     });
     await params.replyOptions?.onItemEvent?.({
       itemId: "tool:exec-1",
       kind: "tool",
-      title: "Running command",
+      title:
+        "exec lin issue query --all-teams --state completed --json --limit 100 --updated-after 2026-04-13 (in ~/.openclaw/workspace)",
       phase: "end",
       status: "completed",
     });
@@ -293,14 +295,14 @@ describe("dispatchPreparedSlackMessage progress plan streaming", () => {
         channel: "C123",
         threadTs: THREAD_TS,
         taskDisplayMode: "plan",
-        chunks: expect.arrayContaining([
+        chunks: [
           expect.objectContaining({
             type: "task_update",
             id: "understand_request",
             title: "Understand request",
             status: "in_progress",
           }),
-        ]),
+        ],
       }),
     );
 
@@ -320,15 +322,11 @@ describe("dispatchPreparedSlackMessage progress plan streaming", () => {
           status: "complete",
         }),
         expect.objectContaining({
-          title: "Run tools",
+          title: "Using Linear",
           status: "in_progress",
         }),
         expect.objectContaining({
-          title: "Running command",
-          status: "in_progress",
-        }),
-        expect.objectContaining({
-          title: "Running command",
+          title: "Using Linear",
           status: "complete",
         }),
         expect.objectContaining({
