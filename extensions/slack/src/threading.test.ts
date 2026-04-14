@@ -103,4 +103,42 @@ describe("resolveSlackThreadTargets", () => {
     expect(context.messageThreadId).toBe("456");
     expect(context.replyToId).toBe("456");
   });
+
+  it("treats bot-rooted direct-message thread replies as fresh per-message threads in all mode", () => {
+    const { replyThreadTs, statusThreadTs, isThreadReply } = resolveSlackThreadTargets({
+      replyToMode: "all",
+      message: {
+        type: "message",
+        channel: "D1",
+        channel_type: "im",
+        user: "U-user",
+        parent_user_id: "U-bot",
+        ts: "789",
+        thread_ts: "456",
+      },
+    });
+
+    expect(isThreadReply).toBe(false);
+    expect(replyThreadTs).toBe("789");
+    expect(statusThreadTs).toBe("789");
+  });
+
+  it("keeps user-rooted direct-message thread replies on the existing thread", () => {
+    const context = resolveSlackThreadContext({
+      replyToMode: "all",
+      message: {
+        type: "message",
+        channel: "D1",
+        channel_type: "im",
+        user: "U-user",
+        parent_user_id: "U-user",
+        ts: "789",
+        thread_ts: "456",
+      },
+    });
+
+    expect(context.isThreadReply).toBe(true);
+    expect(context.messageThreadId).toBe("456");
+    expect(context.replyToId).toBe("456");
+  });
 });

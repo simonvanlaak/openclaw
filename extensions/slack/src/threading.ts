@@ -17,8 +17,17 @@ export function resolveSlackThreadContext(params: {
   const eventTs = params.message.event_ts;
   const messageTs = params.message.ts ?? eventTs;
   const hasThreadTs = typeof incomingThreadTs === "string" && incomingThreadTs.length > 0;
+  const isBotRootedDirectMessageThread =
+    params.message.channel_type === "im" &&
+    typeof params.message.parent_user_id === "string" &&
+    typeof params.message.user === "string" &&
+    params.message.parent_user_id.length > 0 &&
+    params.message.user.length > 0 &&
+    params.message.parent_user_id !== params.message.user;
   const isThreadReply =
-    hasThreadTs && (incomingThreadTs !== messageTs || Boolean(params.message.parent_user_id));
+    hasThreadTs &&
+    !isBotRootedDirectMessageThread &&
+    (incomingThreadTs !== messageTs || Boolean(params.message.parent_user_id));
   const replyToId = incomingThreadTs ?? messageTs;
   const messageThreadId = isThreadReply
     ? incomingThreadTs
