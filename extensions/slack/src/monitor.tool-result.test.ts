@@ -452,6 +452,61 @@ describe("monitorSlackProvider tool results", () => {
     });
   });
 
+  it("updates assistant thread status when a tool starts before replies start", async () => {
+    replyMock.mockImplementation(async (...args: unknown[]) => {
+      const opts = (args[1] ?? {}) as {
+        onToolStart?: (payload: { name?: string }) => Promise<void> | void;
+      };
+      await opts?.onToolStart?.({ name: "exec" });
+      return { text: "final reply" };
+    });
+
+    setDirectMessageReplyMode("all");
+    await runSlackMessageOnce(monitorSlackProvider, {
+      event: makeSlackMessageEvent(),
+    });
+
+    const client = getSlackClient() as {
+      assistant?: { threads?: { setStatus?: ReturnType<typeof vi.fn> } };
+    };
+    const setStatus = client.assistant?.threads?.setStatus;
+    expect(setStatus).toHaveBeenCalledWith({
+      token: "bot-token",
+      channel_id: "C1",
+      thread_ts: "123",
+      status: "Running command...",
+    });
+    expect(setStatus).toHaveBeenLastCalledWith({
+      token: "bot-token",
+      channel_id: "C1",
+      thread_ts: "123",
+      status: "",
+    });
+  });
+
+  it("surfaces audio preflight with assistant thread status", async () => {
+    replyMock.mockResolvedValue({ text: "transcribed" });
+
+    setDirectMessageReplyMode("all");
+    await runSlackMessageOnce(monitorSlackProvider, {
+      event: {
+        ...makeSlackMessageEvent(),
+        files: [{ id: "F1", name: "voice.ogg", mimetype: "audio/ogg" }],
+      },
+    });
+
+    const client = getSlackClient() as {
+      assistant?: { threads?: { setStatus?: ReturnType<typeof vi.fn> } };
+    };
+    const setStatus = client.assistant?.threads?.setStatus;
+    expect(setStatus).toHaveBeenCalledWith({
+      token: "bot-token",
+      channel_id: "C1",
+      thread_ts: "123",
+      status: "Transcribing audio...",
+    });
+  });
+
   async function expectMentionPatternMessageAccepted(text: string): Promise<void> {
     setRequireMentionChannelConfig(["\\bopenclaw\\b"]);
     replyMock.mockResolvedValue({ text: "hi" });

@@ -347,12 +347,14 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
         : payload,
     typing: {
       start: async () => {
-        didSetStatus = true;
-        await ctx.setSlackThreadStatus({
-          channelId: message.channel,
-          threadTs: statusThreadTs,
-          status: "is typing...",
-        });
+        if (!didSetStatus) {
+          didSetStatus = true;
+          await ctx.setSlackThreadStatus({
+            channelId: message.channel,
+            threadTs: statusThreadTs,
+            status: "is typing...",
+          });
+        }
         if (typingReaction && message.ts) {
           await reactSlackMessage(message.channel, message.ts, typingReaction, {
             token: ctx.botToken,
@@ -753,9 +755,10 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
           if (statusReactionsEnabled) {
             await statusReactions.setTool(payload.name);
           }
-          if (!payload.name || !didSetStatus) {
+          if (!payload.name || !statusThreadTs) {
             return;
           }
+          didSetStatus = true;
           await ctx.setSlackThreadStatus({
             channelId: message.channel,
             threadTs: statusThreadTs,

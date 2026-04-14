@@ -1,8 +1,5 @@
 import { resolveAckReaction } from "openclaw/plugin-sdk/agent-runtime";
-import {
-  shouldAckReaction as shouldAckReactionGate,
-  type AckReactionScope,
-} from "openclaw/plugin-sdk/channel-feedback";
+import { shouldAckReaction as shouldAckReactionGate } from "openclaw/plugin-sdk/channel-feedback";
 import {
   buildMentionRegexes,
   formatInboundEnvelope,
@@ -114,6 +111,28 @@ type SlackRoutingContext = {
   sessionKey: string;
   historyKey: string;
 };
+
+function hasAudioPreflightCandidate(message: SlackMessageEvent): boolean {
+  return (message.files ?? []).some((file) => {
+    const mime = normalizeOptionalString(file.mimetype)?.toLowerCase();
+    const subtype = normalizeOptionalString(file.subtype)?.toLowerCase();
+    return subtype === "slack_audio" || Boolean(mime?.startsWith("audio/"));
+  });
+}
+
+function normalizeAckReactionScope(scope: string | undefined) {
+  switch (scope) {
+    case "all":
+    case "direct":
+    case "group-all":
+    case "group-mentions":
+    case "off":
+    case "none":
+      return scope;
+    default:
+      return undefined;
+  }
+}
 
 async function resolveSlackConversationContext(params: {
   ctx: SlackMonitorContext;
@@ -549,6 +568,18 @@ export async function prepareSlackMessage(params: {
           client: ctx.app.client,
         })
       : null;
+  const preflightStatusThreadTs = isThreadReply
+    ? threadTs
+    : replyToMode === "all"
+      ? message.ts
+      : undefined;
+  if (preflightStatusThreadTs && hasAudioPreflightCandidate(message)) {
+    await ctx.setSlackThreadStatus({
+      channelId: message.channel,
+      threadTs: preflightStatusThreadTs,
+      status: "Transcribing audio...",
+    });
+  }
   const resolvedMessageContent = await resolveSlackMessageContent({
     message,
     isThreadReply,
@@ -572,7 +603,7 @@ export async function prepareSlackMessage(params: {
     Boolean(
       ackReaction &&
       shouldAckReactionGate({
-        scope: ctx.ackReactionScope as AckReactionScope | undefined,
+        scope: normalizeAckReactionScope(ctx.ackReactionScope),
         isDirect: isDirectMessage,
         isGroup: isRoomish,
         isMentionableGroup: isRoom,
