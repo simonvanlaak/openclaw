@@ -16,6 +16,7 @@ export type PreparedSlackMessage = {
   replyToMode: "off" | "first" | "all" | "batched";
   isDirectMessage: boolean;
   isRoomish: boolean;
+  hasAudioInput: boolean;
   historyKey: string;
   preview: string;
   ackReactionMessageTs?: string;

@@ -868,6 +868,7 @@ export async function prepareSlackMessage(params: {
     replyToMode,
     isDirectMessage,
     isRoomish,
+    hasAudioInput: hasAudioPreflightCandidate(message),
     historyKey,
     preview,
     ackReactionMessageTs,

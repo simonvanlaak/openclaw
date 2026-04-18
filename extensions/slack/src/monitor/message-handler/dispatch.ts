@@ -508,11 +508,15 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
   const deliveryTracker = createSlackTurnDeliveryTracker();
   let progressUpdateChain: Promise<void> = Promise.resolve();
   let progressPlanStarted = false;
-  let progressUnderstandCompleted = false;
+  let progressReadingCompleted = false;
+  let progressListeningStarted = false;
+  let progressListeningCompleted = false;
   let progressToolsActivated = false;
   let progressReviewStarted = false;
-  let progressComposeStarted = false;
-  let progressComposeCompleted = false;
+  let progressWritingStarted = false;
+  let progressWritingCompleted = false;
+  let progressSendingStarted = false;
+  let progressSendingCompleted = false;
   const activeProgressToolTasks: string[] = [];
   const progressToolTaskIdsByItemId = new Map<string, string>();
   const progressToolTaskTitles = new Map<string, string>();
@@ -540,8 +544,8 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       taskDisplayMode: "plan",
       chunks: [
         createSlackTaskUpdateChunk({
-          taskId: "understand_request",
-          title: "Thinking...",
+          taskId: "reading_message",
+          title: "Reading message",
           status: "in_progress",
         }),
       ],
@@ -569,16 +573,46 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
     });
   };
 
-  const completeProgressUnderstand = async () => {
-    if (progressUnderstandCompleted) {
-      return;
+  const transitionProgressTask = async (params: {
+    start?: { taskId: string; title: string; status: "in_progress" | "error" };
+    complete?: { taskId: string; title: string; status: "complete" | "error" };
+  }) => {
+    const chunks: SlackStreamChunk[] = [];
+    if (params.start) {
+      chunks.push(
+        createSlackTaskUpdateChunk({
+          taskId: params.start.taskId,
+          title: params.start.title,
+          status: params.start.status,
+        }),
+      );
     }
-    progressUnderstandCompleted = true;
+    if (params.complete) {
+      chunks.push(
+        createSlackTaskUpdateChunk({
+          taskId: params.complete.taskId,
+          title: params.complete.title,
+          status: params.complete.status,
+        }),
+      );
+    }
+    await appendProgressTaskUpdates(chunks);
+  };
+
+  const setProgressListeningStatus = async (
+    status: "pending" | "in_progress" | "complete" | "error",
+  ) => {
+    if (status === "in_progress") {
+      progressListeningStarted = true;
+    }
+    if (status === "complete" || status === "error") {
+      progressListeningCompleted = true;
+    }
     await appendProgressTaskUpdates([
       createSlackTaskUpdateChunk({
-        taskId: "understand_request",
-        title: "Thinking...",
-        status: "complete",
+        taskId: "listening_to_audio",
+        title: "Listening to audio",
+        status,
       }),
     ]);
   };
@@ -605,22 +639,101 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
     ]);
   };
 
-  const setProgressComposeStatus = async (
+  const setProgressSendingStatus = async (
     status: "pending" | "in_progress" | "complete" | "error",
   ) => {
     if (status === "in_progress") {
-      progressComposeStarted = true;
+      progressSendingStarted = true;
     }
     if (status === "complete") {
-      progressComposeCompleted = true;
+      progressSendingCompleted = true;
     }
     await appendProgressTaskUpdates([
       createSlackTaskUpdateChunk({
-        taskId: "compose_response",
-        title: "Compose response",
+        taskId: "sending_reply",
+        title: "Sending reply",
         status,
       }),
     ]);
+  };
+
+  const startProgressListening = async () => {
+    if (progressListeningStarted) {
+      return;
+    }
+    progressListeningStarted = true;
+    progressReadingCompleted = true;
+    await transitionProgressTask({
+      start: {
+        taskId: "listening_to_audio",
+        title: "Listening to audio",
+        status: "in_progress",
+      },
+      complete: {
+        taskId: "reading_message",
+        title: "Reading message",
+        status: "complete",
+      },
+    });
+  };
+
+  const completePreviousPhaseAfterNewStart = async (params: {
+    nextTaskId: string;
+    nextTitle: string;
+    nextStatus?: "in_progress" | "error";
+  }) => {
+    const nextStatus = params.nextStatus ?? "in_progress";
+    if (progressWritingStarted && !progressWritingCompleted) {
+      progressWritingCompleted = true;
+      await transitionProgressTask({
+        start: { taskId: params.nextTaskId, title: params.nextTitle, status: nextStatus },
+        complete: {
+          taskId: "writing_reply",
+          title: "Writing reply",
+          status: "complete",
+        },
+      });
+      return;
+    }
+    if (progressReviewStarted) {
+      progressReviewStarted = false;
+      await transitionProgressTask({
+        start: { taskId: params.nextTaskId, title: params.nextTitle, status: nextStatus },
+        complete: {
+          taskId: "analyze_tool_results",
+          title: "Analyzing tool results",
+          status: "complete",
+        },
+      });
+      return;
+    }
+    if (progressListeningStarted && !progressListeningCompleted) {
+      progressListeningCompleted = true;
+      await transitionProgressTask({
+        start: { taskId: params.nextTaskId, title: params.nextTitle, status: nextStatus },
+        complete: {
+          taskId: "listening_to_audio",
+          title: "Listening to audio",
+          status: "complete",
+        },
+      });
+      return;
+    }
+    if (!progressReadingCompleted) {
+      progressReadingCompleted = true;
+      await transitionProgressTask({
+        start: { taskId: params.nextTaskId, title: params.nextTitle, status: nextStatus },
+        complete: {
+          taskId: "reading_message",
+          title: "Reading message",
+          status: "complete",
+        },
+      });
+      return;
+    }
+    await transitionProgressTask({
+      start: { taskId: params.nextTaskId, title: params.nextTitle, status: nextStatus },
+    });
   };
 
   const deliverNormally = async (params: {
@@ -766,8 +879,24 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
     ...replyPipeline,
     humanDelay: resolveHumanDelayConfig(cfg, route.agentId),
     deliver: async (payload, info) => {
+      if (progressPlanStreamingEnabled) {
+        await queueProgressUpdate(async () => {
+          if (!progressSendingStarted || !progressSendingCompleted) {
+            await completePreviousPhaseAfterNewStart({
+              nextTaskId: "sending_reply",
+              nextTitle: "Sending reply",
+            });
+            progressSendingStarted = true;
+          }
+        });
+      }
       if (useStreaming) {
         await deliverWithStreaming({ payload, kind: info.kind });
+        if (progressPlanStreamingEnabled && !progressSendingCompleted) {
+          await queueProgressUpdate(async () => {
+            await setProgressSendingStatus("complete");
+          });
+        }
         return;
       }
 
@@ -837,6 +966,11 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       }
 
       await deliverNormally({ payload, kind: info.kind });
+      if (progressPlanStreamingEnabled && !progressSendingCompleted) {
+        await queueProgressUpdate(async () => {
+          await setProgressSendingStatus("complete");
+        });
+      }
     },
     onError: (err, info) => {
       runtime.error?.(danger(`slack ${info.kind} reply failed: ${String(err)}`));
@@ -917,6 +1051,9 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
   if (progressPlanStreamingEnabled) {
     await queueProgressUpdate(async () => {
       await ensureProgressPlanStream();
+      if (prepared.hasAudioInput && !progressListeningStarted) {
+        await startProgressListening();
+      }
     });
   }
 
@@ -951,11 +1088,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
             return;
           }
           await queueProgressUpdate(async () => {
-            await completeProgressUnderstand();
-            if (progressReviewStarted) {
-              await setProgressReviewStatus("complete");
-            }
-            if (!progressComposeStarted) {
+            if (!progressWritingStarted) {
               for (const taskId of activeProgressToolTasks.splice(0)) {
                 await appendProgressTaskUpdates([
                   createSlackTaskUpdateChunk({
@@ -967,7 +1100,11 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
                 progressToolTaskTitles.delete(taskId);
               }
               await setProgressToolsStatus("complete");
-              await setProgressComposeStatus("in_progress");
+              await completePreviousPhaseAfterNewStart({
+                nextTaskId: "writing_reply",
+                nextTitle: "Writing reply",
+              });
+              progressWritingStarted = true;
             }
           });
         },
@@ -1002,7 +1139,6 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
             if (payload.kind !== "tool" || !payload.itemId || !payload.title) {
               return;
             }
-            await completeProgressUnderstand();
             if (!progressToolsActivated) {
               progressToolsActivated = true;
               await setProgressToolsStatus("in_progress");
@@ -1038,16 +1174,10 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
               payload.phase === "update" ||
               payload.status === "running"
             ) {
-              if (progressReviewStarted) {
-                await setProgressReviewStatus("complete");
-              }
-              await appendProgressTaskUpdates([
-                createSlackTaskUpdateChunk({
-                  taskId,
-                  title: taskTitle,
-                  status: "in_progress",
-                }),
-              ]);
+              await completePreviousPhaseAfterNewStart({
+                nextTaskId: taskId,
+                nextTitle: taskTitle,
+              });
               return;
             }
 
@@ -1057,21 +1187,42 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
               payload.status === "failed"
             ) {
               const isError = payload.status === "failed";
-              await appendProgressTaskUpdates([
-                createSlackTaskUpdateChunk({
-                  taskId,
-                  title: taskTitle,
-                  status: isError ? "error" : "complete",
-                }),
-              ]);
-              await setProgressReviewStatus(isError ? "error" : "in_progress");
+              if (isError) {
+                await transitionProgressTask({
+                  start: {
+                    taskId: "analyze_tool_results",
+                    title: "Analyzing tool results",
+                    status: "error",
+                  },
+                  complete: {
+                    taskId,
+                    title: taskTitle,
+                    status: "error",
+                  },
+                });
+                progressReviewStarted = false;
+              } else {
+                progressReviewStarted = true;
+                await transitionProgressTask({
+                  start: {
+                    taskId: "analyze_tool_results",
+                    title: "Analyzing tool results",
+                    status: "in_progress",
+                  },
+                  complete: {
+                    taskId,
+                    title: taskTitle,
+                    status: "complete",
+                  },
+                });
+              }
               progressToolTaskIdsByItemId.delete(payload.itemId);
               progressToolTaskTitles.delete(taskId);
               const index = activeProgressToolTasks.indexOf(taskId);
               if (index >= 0) {
                 activeProgressToolTasks.splice(index, 1);
               }
-              if (activeProgressToolTasks.length === 0 && !progressComposeStarted) {
+              if (activeProgressToolTasks.length === 0 && !progressWritingStarted) {
                 await setProgressToolsStatus(isError ? "error" : "complete");
               }
             }
@@ -1108,13 +1259,19 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       if (dispatchError) {
         await appendProgressTaskUpdates([
           createSlackTaskUpdateChunk({
-            taskId: progressComposeStarted ? "compose_response" : "understand_request",
-            title: progressComposeStarted ? "Compose response" : "Thinking...",
+            taskId: progressWritingStarted ? "writing_reply" : "reading_message",
+            title: progressWritingStarted ? "Writing reply" : "Reading message",
             status: "error",
           }),
         ]);
+        if (progressListeningStarted && !progressListeningCompleted) {
+          await setProgressListeningStatus("error");
+        }
         if (progressReviewStarted) {
           await setProgressReviewStatus("error");
+        }
+        if (progressSendingStarted && !progressSendingCompleted) {
+          await setProgressSendingStatus("error");
         }
         if (progressToolsActivated && activeProgressToolTasks.length > 0) {
           for (const taskId of activeProgressToolTasks.splice(0)) {
@@ -1130,20 +1287,25 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
           await setProgressToolsStatus("error");
         }
       } else {
-        if (!progressUnderstandCompleted) {
-          await completeProgressUnderstand();
-        }
-        if (progressReviewStarted) {
-          await setProgressReviewStatus("complete");
-        }
         if (!progressToolsActivated) {
           await setProgressToolsStatus("complete");
         }
-        if (!progressComposeStarted) {
-          await setProgressComposeStatus("in_progress");
+        if (!progressWritingStarted) {
+          await completePreviousPhaseAfterNewStart({
+            nextTaskId: "writing_reply",
+            nextTitle: "Writing reply",
+          });
+          progressWritingStarted = true;
         }
-        if (!progressComposeCompleted) {
-          await setProgressComposeStatus("complete");
+        if (!progressSendingStarted) {
+          await completePreviousPhaseAfterNewStart({
+            nextTaskId: "sending_reply",
+            nextTitle: "Sending reply",
+          });
+          progressSendingStarted = true;
+        }
+        if (!progressSendingCompleted) {
+          await setProgressSendingStatus("complete");
         }
       }
       await stopSlackChunkStream({ session: finalProgressStream });

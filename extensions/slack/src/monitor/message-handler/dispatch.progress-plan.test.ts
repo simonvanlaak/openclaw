@@ -15,7 +15,7 @@ const startSlackChunkStreamMock = vi.fn(async () => ({
 const appendSlackChunkStreamMock = vi.fn(async () => {});
 const stopSlackChunkStreamMock = vi.fn(async () => {});
 
-function createPreparedSlackMessage() {
+function createPreparedSlackMessage(params?: { hasAudioInput?: boolean }) {
   const setSlackThreadStatus = vi.fn(async () => undefined);
   return {
     ctx: {
@@ -55,6 +55,7 @@ function createPreparedSlackMessage() {
     replyToMode: "all",
     isDirectMessage: false,
     isRoomish: false,
+    hasAudioInput: params?.hasAudioInput ?? false,
     historyKey: "history-key",
     preview: "",
     ackReactionValue: "eyes",
@@ -313,8 +314,8 @@ describe("dispatchPreparedSlackMessage progress plan streaming", () => {
         chunks: [
           expect.objectContaining({
             type: "task_update",
-            id: "understand_request",
-            title: "Thinking...",
+            id: "reading_message",
+            title: "Reading message",
             status: "in_progress",
           }),
         ],
@@ -333,7 +334,7 @@ describe("dispatchPreparedSlackMessage progress plan streaming", () => {
     expect(appendedTasks).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          title: "Thinking...",
+          title: "Reading message",
           status: "complete",
         }),
         expect.objectContaining({
@@ -361,14 +362,40 @@ describe("dispatchPreparedSlackMessage progress plan streaming", () => {
           status: "complete",
         }),
         expect.objectContaining({
-          title: "Compose response",
+          title: "Writing reply",
           status: "in_progress",
         }),
         expect.objectContaining({
-          title: "Compose response",
+          title: "Writing reply",
+          status: "complete",
+        }),
+        expect.objectContaining({
+          title: "Sending reply",
+          status: "in_progress",
+        }),
+        expect.objectContaining({
+          title: "Sending reply",
           status: "complete",
         }),
       ]),
+    );
+
+    const findTaskIndex = (title: string, status: string) =>
+      appendedTasks.findIndex((task) => task.title === title && task.status === status);
+    const findLastTaskIndex = (title: string, status: string) =>
+      appendedTasks.findLastIndex((task) => task.title === title && task.status === status);
+
+    expect(findTaskIndex("Using Linear", "in_progress")).toBeLessThan(
+      findTaskIndex("Reading message", "complete"),
+    );
+    expect(findTaskIndex("Analyzing tool results", "in_progress")).toBeLessThan(
+      findTaskIndex("Using Linear", "complete"),
+    );
+    expect(findTaskIndex("Writing reply", "in_progress")).toBeLessThan(
+      findLastTaskIndex("Analyzing tool results", "complete"),
+    );
+    expect(findTaskIndex("Sending reply", "in_progress")).toBeLessThan(
+      findTaskIndex("Writing reply", "complete"),
     );
 
     expect(stopSlackChunkStreamMock).toHaveBeenCalledTimes(1);
@@ -386,5 +413,41 @@ describe("dispatchPreparedSlackMessage progress plan streaming", () => {
         status: "Running command...",
       }),
     );
+  });
+
+  it("includes audio listening steps for audio inputs", async () => {
+    const prepared = createPreparedSlackMessage({ hasAudioInput: true });
+
+    await dispatchPreparedSlackMessage(prepared);
+
+    const appendedTasks = appendSlackChunkStreamMock.mock.calls.flatMap((call: unknown[]) => {
+      const first = call[0] as
+        | {
+            chunks?: Array<{ id?: string; title?: string; status?: string }>;
+          }
+        | undefined;
+      return first?.chunks ?? [];
+    });
+
+    expect(appendedTasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          title: "Listening to audio",
+          status: "in_progress",
+        }),
+        expect.objectContaining({
+          title: "Listening to audio",
+          status: "complete",
+        }),
+      ]),
+    );
+
+    const listeningStart = appendedTasks.findIndex(
+      (task) => task.title === "Listening to audio" && task.status === "in_progress",
+    );
+    const readingComplete = appendedTasks.findIndex(
+      (task) => task.title === "Reading message" && task.status === "complete",
+    );
+    expect(listeningStart).toBeLessThan(readingComplete);
   });
 });
