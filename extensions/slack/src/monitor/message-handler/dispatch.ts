@@ -132,7 +132,7 @@ function normalizeSlackProgressToolTitle(params: { title?: string; itemId?: stri
     return "Using Google Workspace";
   }
   if (haystack.includes("openviking") || haystack.includes(" viking") || haystack.includes("ov ")) {
-    return "Using OpenViking";
+    return "Using Memory";
   }
   if (haystack.includes("slack")) {
     return "Using Slack";
