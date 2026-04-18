@@ -257,6 +257,21 @@ vi.mock("../reply.runtime.js", () => ({
       phase: "end",
       status: "completed",
     });
+    await params.replyOptions?.onToolStart?.({ name: "mcp" });
+    await params.replyOptions?.onItemEvent?.({
+      itemId: "tool:mcp-1",
+      kind: "tool",
+      title: "Using tool",
+      phase: "start",
+      status: "running",
+    });
+    await params.replyOptions?.onItemEvent?.({
+      itemId: "tool:mcp-1",
+      kind: "tool",
+      title: "Using tool",
+      phase: "end",
+      status: "completed",
+    });
     await params.replyOptions?.onAssistantMessageStart?.();
     await params.dispatcher.deliver({ text: FINAL_REPLY_TEXT }, { kind: "final" });
     return {
@@ -299,7 +314,7 @@ describe("dispatchPreparedSlackMessage progress plan streaming", () => {
           expect.objectContaining({
             type: "task_update",
             id: "understand_request",
-            title: "Understand request",
+            title: "Thinking...",
             status: "in_progress",
           }),
         ],
@@ -318,7 +333,7 @@ describe("dispatchPreparedSlackMessage progress plan streaming", () => {
     expect(appendedTasks).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          title: "Understand request",
+          title: "Thinking...",
           status: "complete",
         }),
         expect.objectContaining({
@@ -327,6 +342,22 @@ describe("dispatchPreparedSlackMessage progress plan streaming", () => {
         }),
         expect.objectContaining({
           title: "Using Linear",
+          status: "complete",
+        }),
+        expect.objectContaining({
+          title: "Analyzing tool results",
+          status: "in_progress",
+        }),
+        expect.objectContaining({
+          title: "Analyzing tool results",
+          status: "complete",
+        }),
+        expect.objectContaining({
+          title: "Using tool",
+          status: "in_progress",
+        }),
+        expect.objectContaining({
+          title: "Using tool",
           status: "complete",
         }),
         expect.objectContaining({

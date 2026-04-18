@@ -510,6 +510,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
   let progressPlanStarted = false;
   let progressUnderstandCompleted = false;
   let progressToolsActivated = false;
+  let progressReviewStarted = false;
   let progressComposeStarted = false;
   let progressComposeCompleted = false;
   const activeProgressToolTasks: string[] = [];
@@ -540,7 +541,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       chunks: [
         createSlackTaskUpdateChunk({
           taskId: "understand_request",
-          title: "Understand request",
+          title: "Thinking...",
           status: "in_progress",
         }),
       ],
@@ -576,7 +577,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
     await appendProgressTaskUpdates([
       createSlackTaskUpdateChunk({
         taskId: "understand_request",
-        title: "Understand request",
+        title: "Thinking...",
         status: "complete",
       }),
     ]);
@@ -585,6 +586,24 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
   const setProgressToolsStatus = async (
     _status: "pending" | "in_progress" | "complete" | "error",
   ) => {};
+
+  const setProgressReviewStatus = async (
+    status: "pending" | "in_progress" | "complete" | "error",
+  ) => {
+    if (status === "in_progress") {
+      progressReviewStarted = true;
+    }
+    if (status === "complete" || status === "error") {
+      progressReviewStarted = false;
+    }
+    await appendProgressTaskUpdates([
+      createSlackTaskUpdateChunk({
+        taskId: "analyze_tool_results",
+        title: "Analyzing tool results",
+        status,
+      }),
+    ]);
+  };
 
   const setProgressComposeStatus = async (
     status: "pending" | "in_progress" | "complete" | "error",
@@ -933,6 +952,9 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
           }
           await queueProgressUpdate(async () => {
             await completeProgressUnderstand();
+            if (progressReviewStarted) {
+              await setProgressReviewStatus("complete");
+            }
             if (!progressComposeStarted) {
               for (const taskId of activeProgressToolTasks.splice(0)) {
                 await appendProgressTaskUpdates([
@@ -1016,6 +1038,9 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
               payload.phase === "update" ||
               payload.status === "running"
             ) {
+              if (progressReviewStarted) {
+                await setProgressReviewStatus("complete");
+              }
               await appendProgressTaskUpdates([
                 createSlackTaskUpdateChunk({
                   taskId,
@@ -1039,6 +1064,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
                   status: isError ? "error" : "complete",
                 }),
               ]);
+              await setProgressReviewStatus(isError ? "error" : "in_progress");
               progressToolTaskIdsByItemId.delete(payload.itemId);
               progressToolTaskTitles.delete(taskId);
               const index = activeProgressToolTasks.indexOf(taskId);
@@ -1083,10 +1109,13 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
         await appendProgressTaskUpdates([
           createSlackTaskUpdateChunk({
             taskId: progressComposeStarted ? "compose_response" : "understand_request",
-            title: progressComposeStarted ? "Compose response" : "Understand request",
+            title: progressComposeStarted ? "Compose response" : "Thinking...",
             status: "error",
           }),
         ]);
+        if (progressReviewStarted) {
+          await setProgressReviewStatus("error");
+        }
         if (progressToolsActivated && activeProgressToolTasks.length > 0) {
           for (const taskId of activeProgressToolTasks.splice(0)) {
             await appendProgressTaskUpdates([
@@ -1103,6 +1132,9 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       } else {
         if (!progressUnderstandCompleted) {
           await completeProgressUnderstand();
+        }
+        if (progressReviewStarted) {
+          await setProgressReviewStatus("complete");
         }
         if (!progressToolsActivated) {
           await setProgressToolsStatus("complete");
