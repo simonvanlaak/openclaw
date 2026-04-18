@@ -11,6 +11,10 @@ self-hosted-runner:
     - blacksmith-16vcpu-windows-2025
     - blacksmith-32vcpu-windows-2025
     - blacksmith-16vcpu-ubuntu-2404-arm
+    # 4ok k3s self-hosted runner labels
+    - 4ok-k3s
+    - docker
+    - persistent-cache
 
 # Ignore patterns for known issues
 paths:

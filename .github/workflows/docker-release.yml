@@ -19,7 +19,7 @@ env:
 
 jobs:
   validate_manual_backfill:
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, Linux, X64, 4ok-k3s, docker, persistent-cache]
     permissions:
       contents: read
     steps:
@@ -42,7 +42,7 @@ jobs:
   approve_manual_backfill:
     needs: validate_manual_backfill
     # WARNING: KEEP MANUAL BACKFILLS GATED BY THE docker-release ENVIRONMENT.
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, Linux, X64, 4ok-k3s, docker, persistent-cache]
     environment: docker-release
     steps:
       - name: Approve Docker backfill
@@ -54,7 +54,7 @@ jobs:
   build-amd64:
     needs: [approve_manual_backfill]
     if: ${{ always() && needs.approve_manual_backfill.result == 'success' }}
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, Linux, X64, 4ok-k3s, docker, persistent-cache]
     permissions:
       packages: write
       contents: read
