@@ -29,7 +29,7 @@ env:
 jobs:
   validate_manual_backfill:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, X64]
     permissions:
       contents: read
     steps:
@@ -53,7 +53,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     needs: validate_manual_backfill
     # WARNING: KEEP MANUAL BACKFILLS GATED BY THE docker-release ENVIRONMENT.
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, X64]
     environment: docker-release
     steps:
       - name: Approve Docker backfill
@@ -61,14 +61,12 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: echo "Approved Docker backfill for $RELEASE_TAG"
 
-  # KEEP THIS WORKFLOW ON GITHUB-HOSTED RUNNERS.
-  # DO NOT MOVE IT BACK TO BLACKSMITH WITHOUT RE-VALIDATING TAG BUILDS AND BACKFILLS.
+  # Run Docker release builds on self-hosted k3s runners.
   # Build amd64 images (default + slim share the build stage cache)
   build-amd64:
     needs: [approve_manual_backfill]
     if: ${{ always() && (github.event_name != 'workflow_dispatch' || needs.approve_manual_backfill.result == 'success') }}
-    # WARNING: DO NOT REVERT THIS TO A BLACKSMITH RUNNER WITHOUT RE-VALIDATING TAG BACKFILLS.
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, X64]
     permissions:
       packages: write
       contents: read
@@ -184,8 +182,7 @@ jobs:
   build-arm64:
     needs: [approve_manual_backfill]
     if: ${{ always() && (github.event_name != 'workflow_dispatch' || needs.approve_manual_backfill.result == 'success') }}
-    # WARNING: DO NOT REVERT THIS TO A BLACKSMITH RUNNER WITHOUT RE-VALIDATING TAG BACKFILLS.
-    runs-on: ubuntu-24.04-arm
+    runs-on: [self-hosted, linux, ARM64]
     permissions:
       packages: write
       contents: read
@@ -301,8 +298,7 @@ jobs:
   create-manifest:
     needs: [approve_manual_backfill, build-amd64, build-arm64]
     if: ${{ always() && needs.build-amd64.result == 'success' && needs.build-arm64.result == 'success' && (github.event_name != 'workflow_dispatch' || needs.approve_manual_backfill.result == 'success') }}
-    # WARNING: DO NOT REVERT THIS TO A BLACKSMITH RUNNER WITHOUT RE-VALIDATING TAG BACKFILLS.
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, X64]
     permissions:
       packages: write
       contents: read
